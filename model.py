@@ -142,3 +142,10 @@ label = tf.argmax(tf_predictions, axis=1)
 label = label.numpy()
 for i in range(len(pred_sentences)):
     print(pred_sentences[i], ": \n", labels[label[i]])
+
+#check gpu 
+tf.config.list_physical_devices('GPU')
+print("gpu",tf.config.list_physical_devices('GPU'))
+tf.test.gpu_device_name()
+from tensorflow.python.client import device_lib
+device_lib.list_local_devices()
