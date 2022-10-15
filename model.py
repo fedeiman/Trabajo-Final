@@ -11,9 +11,14 @@ tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
 train = tf.keras.preprocessing.text_dataset_from_directory(
     'data', batch_size=30000, validation_split=0.2,
     subset='training', seed=123)
+
 test = tf.keras.preprocessing.text_dataset_from_directory(
     'data', batch_size=30000, validation_split=0.2,
     subset='validation', seed=123)
+
+# todo change test data to dev partition
+
+# Todo create a new partition called holdout (semeval/test)
 
 for i in train.take(1):
     train_feat = i[0].numpy()
@@ -123,6 +128,8 @@ validation_data = convert_examples_to_tf_dataset(
     list(validation_InputExamples), tokenizer)
 validation_data = validation_data.batch(32)
 
+# check if it is using early stop // use it if not
+
 model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=3e-5, epsilon=1e-08, clipnorm=1.0),
               loss=tf.keras.losses.SparseCategoricalCrossentropy(
                   from_logits=True),
@@ -130,8 +137,13 @@ model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=3e-5, epsilon=1e-
 
 model.fit(train_data, epochs=2, validation_data=validation_data)
 
+# Todo use the requested metrics
+
+# Todo save the model to avoid retrain
+
 pred_sentences = ["You are a good person", "You are a stupid person"]
 
+# Todo change pred_sentences to test tweets set
 
 tf_batch = tokenizer(pred_sentences, max_length=128,
                      padding=True, truncation=True, return_tensors='tf')
@@ -143,9 +155,4 @@ label = label.numpy()
 for i in range(len(pred_sentences)):
     print(pred_sentences[i], ": \n", labels[label[i]])
 
-#check gpu 
-tf.config.list_physical_devices('GPU')
-print("gpu",tf.config.list_physical_devices('GPU'))
-tf.test.gpu_device_name()
-from tensorflow.python.client import device_lib
-device_lib.list_local_devices()
+# Todo get metrics from test set
