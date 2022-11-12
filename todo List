@@ -1,0 +1,7 @@
+# todo change test data to dev partition // 
+# Todo create a new partition called holdout (semeval/test)
+# check if it is using early stop // use it if not
+# Todo use the requested metrics
+# Todo save the model to avoid retrain
+# Todo change pred_sentences to test tweets set // 
+# Todo get metrics from test set

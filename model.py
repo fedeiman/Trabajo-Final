@@ -1,158 +1,245 @@
-import tensorflow as tf
 import pandas as pd
-import os
-import shutil
-from transformers import BertTokenizer, TFBertForSequenceClassification, AutoModel, AutoTokenizer
-from transformers import InputExample, InputFeatures
+import numpy as np
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score
+import torch
+import seaborn as sns
+import transformers
+import json
+from tqdm import tqdm
+from torch.utils.data import Dataset, DataLoader
+from transformers import RobertaModel, RobertaTokenizer, AutoTokenizer, AutoModelForSequenceClassification, AutoModel, RobertaForSequenceClassification
+import logging
+logging.basicConfig(level=logging.ERROR)
+from torch import cuda
 
-model = TFBertForSequenceClassification.from_pretrained("bert-base-uncased")
-tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
+device = 'cuda' if cuda.is_available() else 'cpu'
+print(device)
 
-train = tf.keras.preprocessing.text_dataset_from_directory(
-    'data', batch_size=30000, validation_split=0.2,
-    subset='training', seed=123)
+train = pd.read_csv('hateval2019_en_train.csv', delimiter=',')
+test = pd.read_csv('hateval2019_en_dev.csv', delimiter=',')
+#train = pd.read_csv('drive/MyDrive/hateevalmix.csv', delimiter=',')
+train['HS'].unique()
+test['HS'].unique()
+new_df = train[['text', 'HS']]
+test_data = test[['text', 'HS']]
 
-test = tf.keras.preprocessing.text_dataset_from_directory(
-    'data', batch_size=30000, validation_split=0.2,
-    subset='validation', seed=123)
-
-# todo change test data to dev partition
-
-# Todo create a new partition called holdout (semeval/test)
-
-for i in train.take(1):
-    train_feat = i[0].numpy()
-    train_lab = i[1].numpy()
-
-train = pd.DataFrame([train_feat, train_lab]).T
-train.columns = ['DATA_COLUMN', 'LABEL_COLUMN']
-train['DATA_COLUMN'] = train['DATA_COLUMN'].str.decode("utf-8")
-train.head()
-
-
-for j in test.take(1):
-    test_feat = j[0].numpy()
-    test_lab = j[1].numpy()
-
-test = pd.DataFrame([test_feat, test_lab]).T
-test.columns = ['DATA_COLUMN', 'LABEL_COLUMN']
-test['DATA_COLUMN'] = test['DATA_COLUMN'].str.decode("utf-8")
-test.head()
-
-InputExample(guid=None,
-             text_a="Hello, world",
-             text_b=None,
-             label=1)
+# Defining some key variables that will be used later on in the training
+MAX_LEN = 256
+TRAIN_BATCH_SIZE = 7
+VALID_BATCH_SIZE = 3
+# EPOCHS = 1
+LEARNING_RATE = 1e-05
+#tokenizer = RobertaTokenizer.from_pretrained('roberta-base', truncation=True, do_lower_case=True)
+tokenizer = AutoTokenizer.from_pretrained("finiteautomata/bertweet-base-sentiment-analysis")
+#tokenizer = AutoTokenizer.from_pretrained("vinai/bertweet-base", use_fast=False)
 
 
-def convert_data_to_examples(train, test, DATA_COLUMN, LABEL_COLUMN):
-    train_InputExamples = train.apply(lambda x: InputExample(guid=None,  # Globally unique ID for bookkeeping, unused in this case
-                                                             text_a=x[DATA_COLUMN],
-                                                             text_b=None,
-                                                             label=x[LABEL_COLUMN]), axis=1)
+class SentimentData(Dataset):
+    def __init__(self, dataframe, tokenizer, max_len):
+        self.tokenizer = tokenizer
+        self.data = dataframe
+        self.text = dataframe.text
+        self.targets = self.data.HS
+        self.max_len = max_len
 
-    validation_InputExamples = test.apply(lambda x: InputExample(guid=None,  # Globally unique ID for bookkeeping, unused in this case
-                                                                 text_a=x[DATA_COLUMN],
-                                                                 text_b=None,
-                                                                 label=x[LABEL_COLUMN]), axis=1)
+    def __len__(self):
+        return len(self.text)
 
-    return train_InputExamples, validation_InputExamples
+    def __getitem__(self, index):
+        text = str(self.text[index])
+        text = " ".join(text.split())
 
-    train_InputExamples, validation_InputExamples = convert_data_to_examples(train,
-                                                                             test,
-                                                                             'DATA_COLUMN',
-                                                                             'LABEL_COLUMN')
-
-
-def convert_examples_to_tf_dataset(examples, tokenizer, max_length=128):
-    features = []  # -> will hold InputFeatures to be converted later
-
-    for e in examples:
-        input_dict = tokenizer.encode_plus(
-            e.text_a,
+        inputs = self.tokenizer.encode_plus(
+            text,
+            None,
             add_special_tokens=True,
-            max_length=max_length,  # truncates if len(s) > max_length
-            return_token_type_ids=True,
-            return_attention_mask=True,
-            # pads to the right by default # CHECK THIS for pad_to_max_length
+            max_length=self.max_len,
             pad_to_max_length=True,
-            truncation=True
+            return_token_type_ids=True
         )
-
-        input_ids, token_type_ids, attention_mask = (input_dict["input_ids"],
-                                                     input_dict["token_type_ids"], input_dict['attention_mask'])
-
-        features.append(
-            InputFeatures(
-                input_ids=input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids, label=e.label
-            )
-        )
-
-    def gen():
-        for f in features:
-            yield (
-                {
-                    "input_ids": f.input_ids,
-                    "attention_mask": f.attention_mask,
-                    "token_type_ids": f.token_type_ids,
-                },
-                f.label,
-            )
-
-    return tf.data.Dataset.from_generator(
-        gen,
-        ({"input_ids": tf.int32, "attention_mask": tf.int32,
-         "token_type_ids": tf.int32}, tf.int64),
-        (
-            {
-                "input_ids": tf.TensorShape([None]),
-                "attention_mask": tf.TensorShape([None]),
-                "token_type_ids": tf.TensorShape([None]),
-            },
-            tf.TensorShape([]),
-        ),
-    )
+        ids = inputs['input_ids']
+        mask = inputs['attention_mask']
+        token_type_ids = inputs["token_type_ids"]
 
 
-DATA_COLUMN = 'DATA_COLUMN'
-LABEL_COLUMN = 'LABEL_COLUMN'
+        return {
+            'ids': torch.tensor(ids, dtype=torch.long),
+            'mask': torch.tensor(mask, dtype=torch.long),
+            'token_type_ids': torch.tensor(token_type_ids, dtype=torch.long),
+            'targets': torch.tensor(self.targets[index], dtype=torch.float)
+        }
 
-train_InputExamples, validation_InputExamples = convert_data_to_examples(
-    train, test, DATA_COLUMN, LABEL_COLUMN)
+#use one file sum of test and train, high Accuracy
+# train_size = 0.75
+# train_data=new_df.sample(frac=train_size,random_state=200)
+# test_data=new_df.drop(train_data.index).reset_index(drop=True)
+# train_data = train_data.reset_index(drop=True)
 
-train_data = convert_examples_to_tf_dataset(
-    list(train_InputExamples), tokenizer)
-train_data = train_data.shuffle(100).batch(32).repeat(2)
 
-validation_data = convert_examples_to_tf_dataset(
-    list(validation_InputExamples), tokenizer)
-validation_data = validation_data.batch(32)
+# print("FULL Dataset: {}".format(new_df.shape))
+# print("TRAIN Dataset: {}".format(train_data.shape))
+# print("TEST Dataset: {}".format(test_data.shape))
 
-# check if it is using early stop // use it if not
+# training_set = SentimentData(train_data, tokenizer, MAX_LEN)
+# testing_set = SentimentData(test_data, tokenizer, MAX_LEN)
 
-model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=3e-5, epsilon=1e-08, clipnorm=1.0),
-              loss=tf.keras.losses.SparseCategoricalCrossentropy(
-                  from_logits=True),
-              metrics=[tf.keras.metrics.SparseCategoricalAccuracy('accuracy')])
+# use hateeval train and test separate, the Accuracy goes down
+train_size = 1
+train_data=new_df.sample(frac=train_size,random_state=200)
+test_data=test_data.sample(frac=train_size,random_state=200)
+train_data = train_data.reset_index(drop=True)
+test_data = test_data.reset_index(drop=True)
 
-model.fit(train_data, epochs=2, validation_data=validation_data)
 
-# Todo use the requested metrics
+print("FULL Dataset: {}".format(new_df.shape))
+print("TRAIN Dataset: {}".format(train_data.shape))
+print("TEST Dataset: {}".format(test_data.shape))
 
-# Todo save the model to avoid retrain
+training_set = SentimentData(train_data, tokenizer, MAX_LEN)
+testing_set = SentimentData(test_data, tokenizer, MAX_LEN)
 
-pred_sentences = ["You are a good person", "You are a stupid person"]
 
-# Todo change pred_sentences to test tweets set
 
-tf_batch = tokenizer(pred_sentences, max_length=128,
-                     padding=True, truncation=True, return_tensors='tf')
-tf_outputs = model(tf_batch)
-tf_predictions = tf.nn.softmax(tf_outputs[0], axis=-1)
-labels = ['Hate', 'No Hate']
-label = tf.argmax(tf_predictions, axis=1)
-label = label.numpy()
-for i in range(len(pred_sentences)):
-    print(pred_sentences[i], ": \n", labels[label[i]])
+train_params = {'batch_size': TRAIN_BATCH_SIZE,
+                'shuffle': True,
+                'num_workers': 0
+                }
 
-# Todo get metrics from test set
+test_params = {'batch_size': VALID_BATCH_SIZE,
+                'shuffle': True,
+                'num_workers': 0
+                }
+
+training_loader = DataLoader(training_set, **train_params)
+testing_loader = DataLoader(testing_set, **test_params)
+
+class RobertaClass(torch.nn.Module):
+    def __init__(self):
+        super(RobertaClass, self).__init__()
+        #self.l1 = RobertaModel.from_pretrained("roberta-base")
+        self.l1 = AutoModelForSequenceClassification.from_pretrained("finiteautomata/bertweet-base-sentiment-analysis")
+        #self.l1 = AutoModel.from_pretrained("vinai/bertweet-base")
+        self.pre_classifier = torch.nn.Linear(768, 768)
+        self.dropout = torch.nn.Dropout(0.3)
+        #correct
+        self.classifier = torch.nn.Linear(768, 1)
+        #incorrect
+        #self.classifier = torch.nn.Linear(768, 4)
+
+    def forward(self, input_ids, attention_mask, token_type_ids):
+        output_1 = self.l1(input_ids=input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids)
+        hidden_state = output_1[0]
+        pooler = hidden_state[:, 0]
+        pooler = self.pre_classifier(pooler)
+        pooler = torch.nn.ReLU()(pooler)
+        pooler = self.dropout(pooler)
+        output = self.classifier(pooler)
+        return output
+
+model = RobertaClass()
+model.to(device)
+
+
+# Creating the loss function and optimizer
+loss_function = torch.nn.CrossEntropyLoss()
+optimizer = torch.optim.Adam(params =  model.parameters(), lr=LEARNING_RATE)
+
+def calcuate_accuracy(preds, targets):
+    n_correct = (preds==targets).sum().item()
+    #acc = accuracy_score(targets, preds)
+    return n_correct
+
+# Defining the training function on the 80% of the dataset for tuning the distilbert model
+
+def train(epoch):
+    tr_loss = 0
+    n_correct = 0
+    nb_tr_steps = 0
+    nb_tr_examples = 0
+    model.train()
+    for _,data in tqdm(enumerate(training_loader, 0)):
+        ids = data['ids'].to(device, dtype = torch.long)
+        mask = data['mask'].to(device, dtype = torch.long)
+        token_type_ids = data['token_type_ids'].to(device, dtype = torch.long)
+        targets = data['targets'].to(device, dtype = torch.long)
+        outputs = model(ids, mask, token_type_ids)
+        loss = loss_function(outputs, targets)
+        tr_loss += loss.item()
+        big_val, big_idx = torch.max(outputs.data, dim=1)
+        n_correct += calcuate_accuracy(big_idx, targets)
+
+        nb_tr_steps += 1
+        nb_tr_examples+=targets.size(0)
+        
+        if _%5000==0:
+            loss_step = tr_loss/nb_tr_steps
+            accu_step = (n_correct*100)/nb_tr_examples 
+            print(f"Training Loss per 5000 steps: {loss_step}")
+            print(f"Training Accuracy per 5000 steps: {accu_step}")
+
+        optimizer.zero_grad()
+        loss.backward()
+        # # When using GPU
+        optimizer.step()
+
+    print(f'The Total Accuracy for Epoch {epoch}: {(n_correct*100)/nb_tr_examples}')
+    epoch_loss = tr_loss/nb_tr_steps
+    epoch_accu = (n_correct*100)/nb_tr_examples
+    print(f"Training Loss Epoch: {epoch_loss}")
+    print(f"Training Accuracy Epoch: {epoch_accu}")
+
+    return 
+
+
+
+EPOCHS = 1
+for epoch in range(EPOCHS):
+    train(epoch)
+
+def valid(model, testing_loader):
+    model.eval()
+    n_correct = 0; n_wrong = 0; total = 0; tr_loss=0; nb_tr_steps=0; nb_tr_examples=0
+    with torch.no_grad():
+        for _, data in tqdm(enumerate(testing_loader, 0)):
+            ids = data['ids'].to(device, dtype = torch.long)
+            mask = data['mask'].to(device, dtype = torch.long)
+            token_type_ids = data['token_type_ids'].to(device, dtype=torch.long)
+            targets = data['targets'].to(device, dtype = torch.long)
+            outputs = model(ids, mask, token_type_ids).squeeze()
+            loss = loss_function(outputs, targets)
+            tr_loss += loss.item()
+            #target = arr 4 values, 0 or 1 depending pred shape (4,1)
+            #output 4 arr of 5 values do not know what
+            #maximun val of each arr is in pos 0 means no hate pos 1 means hate
+            big_val, big_idx = torch.max(outputs.data, dim=1)
+            #print(outputs.data,'a',big_val,'b',big_idx,'c')
+            n_correct += calcuate_accuracy(big_idx, targets)
+
+            nb_tr_steps += 1
+            nb_tr_examples+=targets.size(0)
+            
+            if _%5000==0:
+                loss_step = tr_loss/nb_tr_steps
+                accu_step = (n_correct*100)/nb_tr_examples
+                print(f"Validation Loss per 100 steps: {loss_step}")
+                print(f"Validation Accuracy per 100 steps: {accu_step}")
+    epoch_loss = tr_loss/nb_tr_steps
+    epoch_accu = (n_correct*100)/nb_tr_examples
+    print(f"Validation Loss Epoch: {epoch_loss}")
+    print(f"Validation Accuracy Epoch: {epoch_accu}")
+    
+    return epoch_accu
+
+acc = valid(model, testing_loader)
+print("Accuracy on test data = %0.2f%%" % acc)
+
+
+output_model_file = 'pytorch_roberta_sentiment.bin'
+output_vocab_file = './'
+
+model_to_save = model
+torch.save(model_to_save, output_model_file)
+tokenizer.save_vocabulary(output_vocab_file)
+
+print('All files saved')
